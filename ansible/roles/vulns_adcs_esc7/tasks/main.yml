@@ -9,12 +9,32 @@
     name: Release
   register: _net_release
 
-- name: Install .NET Framework 4.8 (PSPKI 4.x requires >=4.7.2)
-  chocolatey.chocolatey.win_chocolatey:
-    name: dotnetfx
-    state: present
-  when: (_net_release.value | default(0) | int) < 461808
+# Chocolatey 2.0 itself requires .NET Framework 4.8, so it cannot be used to
+# bootstrap 4.8 on a host that lacks it -- exactly the hosts this task targets.
+# Pull the official offline installer directly instead. 528040 = the 4.8 release
+# key; gate on that (not 461808 / 4.7.2, which left Server 2019 short of 4.8).
+- name: Ensure staging directory exists
+  ansible.windows.win_file:
+    path: C:\setup
+    state: directory
+  when: (_net_release.value | default(0) | int) < 528040
+
+- name: Download .NET Framework 4.8 offline installer (force TLS 1.2 for pre-4.8 hosts)
+  ansible.windows.win_shell: |
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?linkid=2088631" -OutFile C:\setup\ndp48.exe -UseBasicParsing
+  args:
+    creates: C:\setup\ndp48.exe
+  when: (_net_release.value | default(0) | int) < 528040
+
+- name: Install .NET Framework 4.8
+  ansible.windows.win_command: C:\setup\ndp48.exe /q /norestart
+  become: true
+  become_method: runas
+  become_user: SYSTEM
   register: _dotnetfx_install
+  failed_when: _dotnetfx_install.rc is defined and _dotnetfx_install.rc not in [0, 3010, 1641]
+  when: (_net_release.value | default(0) | int) < 528040
 
 - name: Reboot to complete .NET Framework upgrade
   ansible.windows.win_reboot:
